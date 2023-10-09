@@ -17,12 +17,36 @@
 #define ROLD_WINDOW_CLASS_NAME "ROLD_WINDOW_CLASS_NAME"
 
 bool Running = false;
+u32 PageSize;
 
 typedef struct Game_Code
 {
 	HMODULE code;
 	Tick_Func* tick_func;
 } Game_Code;
+
+// TODO: Memory arena handle
+void*
+Arena_CommitMoreMemory(Arena* arena)
+{
+	// TODO:
+}
+
+Arena*
+Arena_Init(umm reserve_size, u8 commit_pace)
+{
+	Arena* arena = VirtualAlloc(0, reserve_size, MEM_RESERVE, PAGE_READWRITE);
+	ASSERT(arena != 0);
+
+	void* commit_result = VirtualAlloc(arena, PageSize*commit_pace, MEM_COMMIT, PAGE_READWRITE);
+	ASSERT(commit_result != 0);
+
+	*arena = (Arena){
+		// TODO:
+	};
+
+	return arena;
+}
 
 LRESULT
 Wndproc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam)

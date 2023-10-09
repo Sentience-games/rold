@@ -7,6 +7,8 @@
 #define MIN(A, B) ((A) < (B) ? (A) : (B))
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
 
+#define IS_POW2(N) ((N) > 0 && ((N)&((N)-1)) == 0)
+
 typedef signed __int8  s8;
 typedef signed __int16 s16;
 typedef signed __int32 s32;
