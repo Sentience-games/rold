@@ -49,10 +49,10 @@ typedef u64 umm;
 typedef s64 sint;
 typedef u64 uint;
 
-#define S8_MIN   (s8)(0x10)
-#define S16_MIN (s16)(0x1000)
-#define S32_MIN (s32)(0x10000000DL)
-#define S64_MIN (s64)(0x1000000000000000DLL)
+#define S8_MIN   (s8)(0x80)
+#define S16_MIN (s16)(0x8000)
+#define S32_MIN (s32)(0x80000000DL)
+#define S64_MIN (s64)(0x8000000000000000DLL)
 
 #define S8_MAX   (s8)(0x7F)
 #define S16_MAX (s16)(0x7FFF)
@@ -63,6 +63,14 @@ typedef u64 uint;
 #define U16_MAX (u16)(0xFFFF)
 #define U32_MAX (u32)(0xFFFFFFFFUL)
 #define U64_MAX (u64)(0xFFFFFFFFFFFFFFFFULL)
+
+#define SMM_MIN S64_MIN
+#define SMM_MAX S64_MAX
+#define UMM_MAX U64_MAX
+
+#define SINT_MIN S64_MIN
+#define SINT_MAX S64_MAX
+#define UINT_MAX U64_MAX
 
 typedef u8 bool;
 #define true 1 // TODO: Maybe change?
@@ -81,4 +89,4 @@ typedef struct Platform_Link
 	Arena* frame_arena;
 } Platform_Link;
 
-typedef void Tick_Func(Platform_Link platform_link);
+typedef void Game_Tick_Func(Platform_Link platform_link);

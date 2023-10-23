@@ -28,20 +28,33 @@ if "%1"=="debug" (
 	goto invalid_arguments
 )
 
-if "%2" neq "" (
+set /A game_only=0
+if "%2"=="game_only" (
+	set /A game_only=1
+) else if "%2" neq "" (
 	goto invalid_arguments
 )
 
-cl %compile_options% ..\src\game.c /LD /link %link_options% /pdb:rold_dll.pdb /out:rold.dll /EXPORT:Tick
-cl %compile_options% ..\src\platform.c /link %link_options% %common_platform_link_options%
+if "%3" neq "" (
+	goto invalid_arguments
+)
 
-copy /Y rold.dll ..\run_path\. >nul
-copy /Y rold.exe ..\run_path\. >nul
+if %game_only%==0 (
+	cl %compile_options% ..\src\platform.c /link %link_options% %common_platform_link_options%
+	REM copy /Y rold.exe ..\run_path\. >nul
+)
+
+del rold_dll*.pdb
+del rold_loaded.dll
+set "timestamp=%TIME:~1,1%%TIME:~3,2%%TIME:~6,2%%TIME:~9,2%"
+
+cl %compile_options% ..\src\game.c /LD /link %link_options% /pdb:rold_dll%timestamp%.pdb /out:rold.dll /EXPORT:Tick
+REM copy /Y rold.dll ..\run_path\. >nul
 
 goto end
 
 :invalid_arguments
-echo Invalid number of arguments^. Usage^: build.bat ^<debug^|release^>
+echo Invalid number of arguments^. Usage^: build.bat ^<debug^|release^> ^[game^_only^]
 
 :end
 endlocal

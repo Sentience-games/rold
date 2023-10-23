@@ -15,54 +15,76 @@
 #include "common.h"
 
 #define ROLD_WINDOW_CLASS_NAME "ROLD_WINDOW_CLASS_NAME"
+#define ROLD_DLL_PATH "rold.dll"
+#define ROLD_DLL_LOADED_PATH "rold_loaded.dll"
+#define ROLD_TICK_FUNC_NAME "Tick"
 
 bool Running = false;
-umm PageSize;
 
-void
-Arena_CommitMoreMemory(Arena__Internal* arena)
+typedef struct Win32_Game_Code
 {
-	umm amount_to_commit = PageSize*arena->commit_pace;
-	ASSERT(arena->committed + amount_to_commit <= arena->reserved);
-
-	void* commit_result = VirtualAlloc((u8*)(arena+1) + arena->committed, amount_to_commit, MEM_COMMIT, PAGE_READWRITE);
-	ASSERT(commit_result != 0); // TODO
-}
-
-Arena*
-Arena_Init(umm reserve_size, u8 commit_pace)
-{
-	ASSERT(PageSize*commit_pace <= reserve_size);
-
-	umm amount_to_commit = PageSize*commit_pace;
-
-	Arena__Internal* arena = VirtualAlloc(0, reserve_size, MEM_RESERVE, PAGE_READWRITE);
-	ASSERT(arena != 0); // TODO
-
-	void* commit_result = VirtualAlloc(arena, amount_to_commit, MEM_COMMIT, PAGE_READWRITE);
-	ASSERT(commit_result != 0); // TODO
-
-	*arena = (Arena__Internal){
-		.commit_more_memory = Arena_CommitMoreMemory,
-		.cursor             = 0,
-		.committed          = amount_to_commit - sizeof(Arena__Internal),
-		.reserved           = reserve_size - sizeof(Arena__Internal),
-		.commit_pace        = commit_pace,
-	};
-
-	return (Arena*)arena;
-}
-
-typedef struct Game_Code
-{
-	HMODULE code;
-	Tick_Func* tick_func;
-} Game_Code;
+	HMODULE dll;
+	Game_Tick_Func* tick;
+	FILETIME file_time;
+} Win32_Game_Code;
 
 bool
-ReloadGameCodeIfNecessary(Game_Code* game_code)
+ReloadGameCodeIfNecessary(Win32_Game_Code* game_code)
 {
-	return true;
+	bool should_reload = true;
+	if (game_code->dll != 0)
+	{
+		WIN32_FILE_ATTRIBUTE_DATA file_info;
+		if (!GetFileAttributesExA(ROLD_DLL_PATH, GetFileExInfoStandard, &file_info)) should_reload = false;
+		else
+		{
+			should_reload = (CompareFileTime(&game_code->file_time, &file_info.ftLastWriteTime) == -1);
+		}
+	}
+
+	bool result = false;
+	if (!should_reload) result = true;
+	else
+	{
+		if (game_code->dll == 0 || FreeLibrary(game_code->dll))
+		{
+			// TODO: Eliminate this delay without tripping DEP
+			Sleep(500);
+			if (CopyFile(ROLD_DLL_PATH, ROLD_DLL_LOADED_PATH, FALSE))
+			{
+				game_code->dll = LoadLibraryA(ROLD_DLL_LOADED_PATH);
+				if (game_code->dll != 0)
+				{
+					game_code->tick = (Game_Tick_Func*)GetProcAddress(game_code->dll, ROLD_TICK_FUNC_NAME);
+					if (game_code->tick != 0)
+					{
+						// NOTE: filetime is not critical to success, so set to a safe value when query fails
+						// TODO: ensure 0 is safe
+						WIN32_FILE_ATTRIBUTE_DATA file_info;
+						if (GetFileAttributesExA(ROLD_DLL_PATH, GetFileExInfoStandard, &file_info)) game_code->file_time = file_info.ftLastWriteTime;
+						else                                                                        game_code->file_time = (FILETIME){0};
+
+						OutputDebugStringA("Reloaded game code successfully\n");
+						result = true;
+					}
+				}
+			}
+		}
+	}
+
+	return result;
+}
+
+void
+Arena_CommitMoreMemory(Arena_Internal* arena)
+{
+	umm required_size = arena->cursor - arena->committed;
+	umm extra_size    = KB(4);
+	void* result = VirtualAlloc(arena->memory + arena->committed, required_size + extra_size, MEM_COMMIT, PAGE_READWRITE);
+	if (result == 0)
+	{
+		//// ERROR: Failed to commit memory
+	}
 }
 
 LRESULT
@@ -79,129 +101,134 @@ Wndproc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam)
 int APIENTRY 
 WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cmd)
 {
-	Arena* platform_arena   = 0;
-	Arena* persistent_arena = 0;
-	Arena* frame_arena      = 0;
-	{ /// Intialize Memory Arenas
-		struct { Arena** arena_handle; umm reserve_size; u8 commit_pace; } arena_settings[] = {
-			[0] = {
-				.arena_handle = &platform_arena,
-				.reserve_size = GB(4),
-				.commit_pace  = 1,
-			},
-			[1] = {
-				.arena_handle = &persistent_arena,
-				.reserve_size = GB(4),
-				.commit_pace  = 1,
-			},
-			[2] = {
-				.arena_handle = &frame_arena,
-				.reserve_size = GB(4),
-				.commit_pace  = 1,
-			},
-		};
-
-		for (uint i = 0; i < STATIC_ARRAY_SIZE(arena_settings); ++i)
+	Arena_Internal arena_bank[3];
+	Arena* platform_arena    = (Arena*)&arena_bank[0];
+	Arena* persistent_arena  = (Arena*)&arena_bank[1];
+	Arena* frame_arena       = (Arena*)&arena_bank[2];
+	{ /// Setup Memory Arenas ---------------------------------------------------------------------------------------------
+		umm reserve_size = GB(32);
+		for (umm i = 0; i < STATIC_ARRAY_SIZE(arena_bank); ++i)
 		{
-			*arena_settings[i].arena_handle = Arena_Init(arena_settings[i].reserve_size, arena_settings[i].commit_pace);
+			void* memory = VirtualAlloc(0, reserve_size, MEM_RESERVE, PAGE_READWRITE);
+			if (memory == 0)
+			{
+				//// ERROR: Failed to reserve memory
+				NOT_IMPLEMENTED;
+			}
+
+			arena_bank[i] = (Arena_Internal){
+				.commit_more_memory = Arena_CommitMoreMemory,
+				.cursor             = 0,
+				.committed          = 0,
+				.reserved           = reserve_size,
+				.memory             = memory,
+			};
 		}
 	}
 
-	{ /// Set Current Working Directory
-		umm exe_path_capacity_cutoff = GB(1);
-		umm exe_path_capacity        = PageSize;
-		umm exe_path_size            = 0;
-		LPSTR exe_path = Arena_Push(platform_arena, exe_path_capacity, ALIGNOF(u8));
+	{ /// Set Working Directory -------------------------------------------------------------------------------------------
+		Arena_Marker* marker = Arena_GetMarker(platform_arena);
 
-		ASSERT(exe_path_capacity_cutoff < U32_MAX);
-		while (exe_path_capacity < exe_path_capacity_cutoff)
+		DWORD working_dir_growth   = MAX_PATH;
+		DWORD working_dir_cutoff   = 10*MAX_PATH; // TODO: idk man
+		DWORD working_dir_capacity = MAX_PATH;
+		DWORD working_dir_size     = 0;
+		LPSTR working_dir          = Arena_Push(platform_arena, working_dir_capacity, ALIGNOF(u8));
+		
+		for (;;)
 		{
-			exe_path_size = GetModuleFileNameA(0, exe_path, (DWORD)exe_path_capacity);
-			if (exe_path_size == 0 || exe_path_size == exe_path_capacity)
+			working_dir_size = GetModuleFileNameA(0, working_dir, working_dir_capacity);
+			if (working_dir_size == 0 || working_dir_size == working_dir_capacity)
 			{
-				// NOTE: poor growth behaviour, but this should never happen, so I guess its fine
-				exe_path_capacity += PageSize;
-				Arena_Push(platform_arena, PageSize, ALIGNOF(u8));
-				continue;
+				if (working_dir_capacity < working_dir_cutoff)
+				{
+					Arena_Push(platform_arena, working_dir_growth, ALIGNOF(u8));
+					working_dir_capacity += working_dir_growth;
+					continue;
+				}
+				else
+				{
+					//// ERROR: Failed to query directory of executable
+					NOT_IMPLEMENTED;
+					break;
+				}
 			}
 			else break;
 		}
 
-		if (exe_path_capacity >= exe_path_capacity_cutoff)
+		while (working_dir[working_dir_size-1] != '\\' && working_dir[working_dir_size-1] != '/') --working_dir_size;
+		working_dir[working_dir_size] = 0;
+
+		if (!SetCurrentDirectoryA(working_dir))
 		{
-			//// ERROR: Path too long
+			//// ERROR: Failed to set working directory
 			NOT_IMPLEMENTED;
 		}
-		else
-		{
-			for (umm i = exe_path_size-1; i < exe_path_size; --i)
-			{
-				if (exe_path[i] == '/' || exe_path[i] == '\\')
-				{
-					exe_path[i+1] = 0;
-					break;
-				}
-			}
 
-			if (!SetCurrentDirectoryA(exe_path))
+		Arena_PopToMarker(platform_arena, marker);
+	}
+
+	Win32_Game_Code game_code   = {0};
+	Platform_Link platform_link = {
+		.persistent_arena = persistent_arena,
+		.frame_arena      = frame_arena,
+	};
+	{ /// Load Game -------------------------------------------------------------------------------------------------------
+		for (umm i = 0;; ++i)
+		{
+			if      (ReloadGameCodeIfNecessary(&game_code)) break;
+			else if (i < 100)
 			{
-				//// ERROR: Failed to set 
+				Sleep(20);
+				continue;
+			}
+			else
+			{
+				//// ERROR: Failed to load game code
 				NOT_IMPLEMENTED;
 			}
 		}
 	}
 
-	Platform_Link platform_link = (Platform_Link){
-		.persistent_arena = persistent_arena,
-		.frame_arena      = frame_arena,
-	};
+	HWND window = 0;
+	{ /// Create Window ---------------------------------------------------------------------------------------------------
+		WNDCLASSA window_class = {
+			.style         = CS_OWNDC, // TODO: This is probably needed for gdi blitting, but I don't know
+			.lpfnWndProc   = Wndproc,
+			.hInstance     = instance,
+			.hbrBackground = CreateSolidBrush(0),
+			.lpszClassName = ROLD_WINDOW_CLASS_NAME,
+		};
 
-	Game_Code game_code = {0};
-	if (!ReloadGameCodeIfNecessary(&game_code))
-	{
-		//// ERROR: failed to load game code
-		NOT_IMPLEMENTED;
-	}
-
-	WNDCLASSA window_class = {
-		.style         = CS_OWNDC, // TODO: This is probably needed for gdi blitting, but I don't know
-		.lpfnWndProc   = Wndproc,
-		.hInstance     = instance,
-		.hbrBackground = CreateSolidBrush(0),
-		.lpszClassName = ROLD_WINDOW_CLASS_NAME,
-	};
-
-	if (!RegisterClassA(&window_class))
-	{
-		//// ERROR
-		NOT_IMPLEMENTED;
-	}
-
-	HWND window = CreateWindowA(ROLD_WINDOW_CLASS_NAME, "Rold",
-															WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-															0, 0, 0, 0);
-
-	if (window == 0)
-	{
-		//// ERROR
-		NOT_IMPLEMENTED;
-	}
-	else
-	{
-		ShowWindow(window, SW_SHOW);
-
-		Running = true;
-		while (Running)
+		if (!RegisterClassA(&window_class))
 		{
-			ReloadGameCodeIfNecessary(&game_code);
-
-			for (MSG msg; PeekMessageA(&msg, window, 0, 0, PM_REMOVE);)
-			{
-				DispatchMessage(&msg);
-			}
-
-			game_code.tick_func(platform_link);
+			//// ERROR
+			NOT_IMPLEMENTED;
 		}
+
+		window = CreateWindowA(ROLD_WINDOW_CLASS_NAME, "Rold",
+													 WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+													 0, 0, 0, 0);
+
+		if (window == 0)
+		{
+			//// ERROR
+			NOT_IMPLEMENTED;
+		}
+	}
+
+	ShowWindow(window, SW_SHOW);
+	Running = true;
+	while (Running)
+	{
+		ReloadGameCodeIfNecessary(&game_code);
+
+		for (MSG msg; PeekMessageA(&msg, window, 0, 0, PM_REMOVE);)
+		{
+			DispatchMessage(&msg);
+		}
+
+		game_code.tick(platform_link);
 	}
 
 	return 0;
