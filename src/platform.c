@@ -16,7 +16,8 @@
 
 #define ROLD_WINDOW_CLASS_NAME "ROLD_WINDOW_CLASS_NAME"
 #define ROLD_DLL_PATH "rold.dll"
-#define ROLD_DLL_LOADED_PATH "rold_loaded.dll"
+#define ROLD_DLL_LOADED_PATH_A "rold_loaded_a.dll"
+#define ROLD_DLL_LOADED_PATH_B "rold_loaded_b.dll"
 #define ROLD_TICK_FUNC_NAME "Tick"
 
 bool Running = false;
@@ -26,7 +27,9 @@ typedef struct Win32_Game_Code
 	HMODULE dll;
 	Game_Tick_Func* tick;
 	FILETIME file_time;
+	uint path_variant;
 } Win32_Game_Code;
+
 
 bool
 ReloadGameCodeIfNecessary(Win32_Game_Code* game_code)
@@ -46,26 +49,34 @@ ReloadGameCodeIfNecessary(Win32_Game_Code* game_code)
 	if (!should_reload) result = true;
 	else
 	{
-		if (game_code->dll == 0 || FreeLibrary(game_code->dll))
-		{
-			// TODO: Eliminate this delay without tripping DEP
-			Sleep(500);
-			if (CopyFile(ROLD_DLL_PATH, ROLD_DLL_LOADED_PATH, FALSE))
-			{
-				game_code->dll = LoadLibraryA(ROLD_DLL_LOADED_PATH);
-				if (game_code->dll != 0)
-				{
-					game_code->tick = (Game_Tick_Func*)GetProcAddress(game_code->dll, ROLD_TICK_FUNC_NAME);
-					if (game_code->tick != 0)
-					{
-						// NOTE: filetime is not critical to success, so set to a safe value when query fails
-						// TODO: ensure 0 is safe
-						WIN32_FILE_ATTRIBUTE_DATA file_info;
-						if (GetFileAttributesExA(ROLD_DLL_PATH, GetFileExInfoStandard, &file_info)) game_code->file_time = file_info.ftLastWriteTime;
-						else                                                                        game_code->file_time = (FILETIME){0};
+		Win32_Game_Code new_code = (Win32_Game_Code){ .path_variant = !game_code->path_variant };
 
-						OutputDebugStringA("Reloaded game code successfully\n");
-						result = true;
+		LPSTR new_loaded_path = (LPSTR[2]){ ROLD_DLL_LOADED_PATH_A, ROLD_DLL_LOADED_PATH_B }[new_code.path_variant];
+
+		if (CopyFile(ROLD_DLL_PATH, new_loaded_path, FALSE))
+		{
+			new_code.dll = LoadLibraryA(new_loaded_path);
+			if (new_code.dll != 0)
+			{
+				new_code.tick = (Game_Tick_Func*)GetProcAddress(new_code.dll, ROLD_TICK_FUNC_NAME);
+				if (new_code.tick == 0)
+				{
+					//// ERROR: Failed to get tick function, try to unload dll and prepare for a new attempt
+					FreeLibrary(new_code.dll);
+				}
+				else
+				{
+					WIN32_FILE_ATTRIBUTE_DATA file_info;
+					if (GetFileAttributesExA(new_loaded_path, GetFileExInfoStandard, &file_info))
+					{
+						new_code.file_time = file_info.ftLastWriteTime;
+
+						if (game_code->dll == 0 || FreeLibrary(game_code->dll))
+						{
+							OutputDebugStringA("Reloaded game code successfully\n");
+							*game_code = new_code;
+							result = true;
+						}
 					}
 				}
 			}
