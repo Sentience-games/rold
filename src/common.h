@@ -18,7 +18,7 @@
 #define NUM_ARGS(...)         CONCAT(NUM_ARGS_, __VA_OPT__(1))(0 __VA_OPT__(,) __VA_ARGS__)
 
 // TODO: check this is not optimized out and traps correctly
-#define ASSERT(EX) ((EX) ? 1 : (__debugbreak(), 0))
+#define ASSERT(EX) ((EX) ? 1 : (__debugbreak(), *(volatile int*)0 = 0))
 #define NOT_IMPLEMENTED ASSERT(!"NOT_IMPLEMENTED")
 #define STATIC_ASSERT(E) static struct { int static_ass : ((E) ? 1 : -1); } CONCAT(StaticAssert_, __LINE__)
 
